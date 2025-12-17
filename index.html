@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AFIDAMP Market Map (Pilota)</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; min-width: 260px; }
+    .kpi { font-size: 22px; font-weight: bold; }
+    label { display:block; margin-bottom: 6px; }
+    select, button { padding: 8px; }
+  </style>
+</head>
+<body>
+  <h2>AFIDAMP Market Map – Tool Pilota</h2>
+
+  <div class="row">
+    <div class="card">
+      <label>Settore</label>
+      <select id="sector">
+        <option value="SCHOOL">Scuole</option>
+        <option value="HEALTH">Sanità</option>
+      </select>
+    </div>
+
+    <div class="card">
+      <label>Territorio (Regione)</label>
+      <select id="region"></select>
+    </div>
+
+    <div class="card">
+      <label>&nbsp;</label>
+      <button id="run">Calcola</button>
+    </div>
+  </div>
+
+  <h3>Risultati</h3>
+  <div id="out" class="row"></div>
+
+<script>
+const SUPABASE_URL = "https://buktyetguurbtxxmtmzl.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ1a3R5ZXRndXVyYnR4eG10bXpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5NzEzMjMsImV4cCI6MjA4MTU0NzMyM30.AhqtRyFhQhJEu9ovuFTnoIjQyf0A2hYj54hV_O931tg";
+
+async function sb(path) {
+  const res = await fetch(SUPABASE_URL + "/rest/v1/" + path, {
+    headers: {
+      "apikey": SUPABASE_ANON,
+      "Authorization": "Bearer " + SUPABASE_ANON
+    }
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function opportunityClass(value, lowMax, mediumMax) {
+  if (value <= lowMax) return "Bassa";
+  if (value <= mediumMax) return "Media";
+  return "Alta";
+}
+
+async function loadRegions() {
+  const regions = await sb("geo_area?level=eq.REGION&select=istat_code,name_it&order=name_it.asc");
+  const sel = document.getElementById("region");
+  sel.innerHTML = regions.map(r => `<option value="${r.istat_code}">${r.name_it}</option>`).join("");
+}
+
+async function estimate(sectorCode, regionIstat) {
+  const mv = await sb("model_version?status=eq.published&select=id,version_code,methodology_note&order=id.desc&limit=1");
+  const mvId = mv[0].id;
+
+  const sector = await sb(`sector?code=eq.${sectorCode}&select=id,code,label_it,proxy_type,default_iic`);
+  const sectorId = sector[0].id;
+
+  const geo = await sb(`geo_area?level=eq.REGION&istat_code=eq.${regionIstat}&select=id,name_it`);
+  const geoId = geo[0].id;
+
+  const thr = await sb(`opportunity_thresholds?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&geo_level=eq.REGION&metric=eq.surface_iic_weighted&select=low_max,medium_max`);
+  const lowMax = Number(thr[0].low_max);
+  const mediumMax = Number(thr[0].medium_max);
+
+  if (sectorCode === "SCHOOL") {
+    const base = await sb(`market_base_data?sector_id=eq.${sectorId}&geo_area_id=eq.${geoId}&select=units_count,source_name,source_year&order=source_year.desc&limit=1`);
+    const coeff = await sb(`afidamp_coefficients?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&select=surface_per_unit,iic&limit=1`);
+
+    const units = Number(base[0].units_count);
+    const surface = units * Number(coeff[0].surface_per_unit);
+    const iic = Number(coeff[0].iic);
+    const weighted = surface * (iic/5);
+    const cls = opportunityClass(weighted, lowMax, mediumMax);
+
+    return {
+      title: `Scuole – ${geo[0].name_it}`,
+      unitsLabel: "Edifici scolastici",
+      units,
+      surface,
+      iic,
+      weighted,
+      opportunity: cls,
+      source: `${base[0].source_name} (${base[0].source_year})`,
+      model: `AFIDAMP v${mv[0].version_code}`
+    };
+  }
+
+  const subtypes = await sb(`sector_subtype?sector_id=eq.${sectorId}&select=id,code,label_it`);
+  const mvCoeff = await sb(`afidamp_coefficients?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&select=sector_subtype_id,surface_per_proxy_unit,iic`);
+
+  let rows = [];
+  let totalSurface = 0;
+  let totalWeighted = 0;
+
+  for (const st of subtypes) {
+    const base = await sb(`market_base_data?sector_id=eq.${sectorId}&sector_subtype_id=eq.${st.id}&geo_area_id=eq.${geoId}&select=proxy_value,source_name,source_year&order=source_year.desc&limit=1`);
+    if (!base.length) continue;
+
+    const c = mvCoeff.find(x => x.sector_subtype_id === st.id);
+    const beds = Number(base[0].proxy_value);
+    const surface = beds * Number(c.surface_per_proxy_unit);
+    const iic = Number(c.iic);
+    const weighted = surface * (iic/5);
+
+    totalSurface += surface;
+    totalWeighted += weighted;
+
+    rows.push({
+      subtype: st.label_it,
+      beds,
+      surface
+    });
+  }
+
+  const cls = opportunityClass(totalWeighted, lowMax, mediumMax);
+  return {
+    title: `Sanità – ${geo[0].name_it}`,
+    detailRows: rows,
+    surface: totalSurface,
+    iic: 5,
+    weighted: totalWeighted,
+    opportunity: cls,
+    model: `AFIDAMP v${mv[0].version_code}`
+  };
+}
+
+function fmt(n) {
+  return new Intl.NumberFormat('it-IT').format(Math.round(n));
+}
+
+document.getElementById("run").addEventListener("click", async () => {
+  const out = document.getElementById("out");
+  out.innerHTML = "";
+  try {
+    const sector = document.getElementById("sector").value;
+    const region = document.getElementById("region").value;
+    const r = await estimate(sector, region);
+
+    let html = `
+      <div class="card" style="flex:1">
+        <div><strong>${r.title}</strong></div>
+        <div style="margin-top:8px" class="kpi">Opportunità: ${r.opportunity}</div>
+        <div>Superficie stimata: <strong>${fmt(r.surface)} m²</strong></div>
+        <div>Superficie pesata (IIC): <strong>${fmt(r.weighted)} m²</strong></div>
+        <div style="margin-top:8px; color:#555">${r.model || ""}</div>
+      </div>
+    `;
+
+    if (r.unitsLabel) {
+      html += `
+        <div class="card">
+          <div><strong>${r.unitsLabel}</strong></div>
+          <div class="kpi">${fmt(r.units)}</div>
+          <div style="margin-top:8px; color:#555">Fonte: ${r.source}</div>
+        </div>
+      `;
+    } else if (r.detailRows) {
+      const rows = r.detailRows.map(x => `<li>${x.subtype}: ${fmt(x.beds)} posti letto → ${fmt(x.surface)} m²</li>`).join("");
+      html += `
+        <div class="card" style="min-width:320px">
+          <div><strong>Dettaglio</strong></div>
+          <ul>${rows}</ul>
+        </div>
+      `;
+    }
+
+    out.innerHTML = html;
+  } catch (e) {
+    out.innerHTML = `<div class="card"><strong>Errore:</strong><br><pre>${String(e)}</pre></div>`;
+  }
+});
+
+loadRegions();
+</script>
+</body>
+</html>
