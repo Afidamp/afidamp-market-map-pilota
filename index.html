@@ -50,8 +50,32 @@ async function sb(path) {
       "Authorization": "Bearer " + SUPABASE_ANON
     }
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Supabase error (${res.status}): ${txt}`);
+  }
   return res.json();
+}
+
+function assertNonEmpty(arr, message) {
+  if (!arr || !Array.isArray(arr) || arr.length === 0) {
+    throw new Error(message);
+  }
+  return arr;
+}
+
+function assertValue(v, message) {
+  if (v === undefined || v === null || v === "") {
+    throw new Error(message);
+  }
+  return v;
+}
+
+function num(v, message) {
+  if (v === undefined || v === null || v === "") throw new Error(message);
+  const n = Number(v);
+  if (Number.isNaN(n)) throw new Error(`${message} (valore="${v}")`);
+  return n;
 }
 
 function opportunityClass(value, lowMax, mediumMax) {
@@ -67,27 +91,50 @@ async function loadRegions() {
 }
 
 async function estimate(sectorCode, regionIstat) {
+  // 1) Model version (published)
   const mv = await sb("model_version?status=eq.published&select=id,version_code,methodology_note&order=id.desc&limit=1");
+  assertNonEmpty(mv, "Nessuna model_version pubblicata trovata (model_version status=published).");
   const mvId = mv[0].id;
 
+  // 2) Sector
   const sector = await sb(`sector?code=eq.${sectorCode}&select=id,code,label_it,proxy_type,default_iic`);
+  assertNonEmpty(sector, `Settore non trovato in tabella sector (code=${sectorCode}).`);
   const sectorId = sector[0].id;
 
+  // 3) Geo area (region)
   const geo = await sb(`geo_area?level=eq.REGION&istat_code=eq.${regionIstat}&select=id,name_it`);
+  assertNonEmpty(geo, `Regione non trovata in tabella geo_area (level=REGION, istat_code=${regionIstat}).`);
   const geoId = geo[0].id;
 
+  // 4) Thresholds (opportunity)
   const thr = await sb(`opportunity_thresholds?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&geo_level=eq.REGION&metric=eq.surface_iic_weighted&select=low_max,medium_max`);
-  const lowMax = Number(thr[0].low_max);
-  const mediumMax = Number(thr[0].medium_max);
+  assertNonEmpty(
+    thr,
+    `Soglie mancanti in opportunity_thresholds per model_version_id=${mvId}, sector_id=${sectorId}, geo_level=REGION, metric=surface_iic_weighted.`
+  );
 
+  const lowMax = num(thr[0].low_max, "low_max mancante/non numerico in opportunity_thresholds");
+  const mediumMax = num(thr[0].medium_max, "medium_max mancante/non numerico in opportunity_thresholds");
+
+  // --- SCHOOL ---
   if (sectorCode === "SCHOOL") {
+    // Base data
     const base = await sb(`market_base_data?sector_id=eq.${sectorId}&geo_area_id=eq.${geoId}&select=units_count,source_name,source_year&order=source_year.desc&limit=1`);
-    const coeff = await sb(`afidamp_coefficients?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&select=surface_per_unit,iic&limit=1`);
+    assertNonEmpty(base, `Dati mancanti in market_base_data per sector_id=${sectorId} e geo_area_id=${geoId} (Scuole).`);
 
-    const units = Number(base[0].units_count);
-    const surface = units * Number(coeff[0].surface_per_unit);
-    const iic = Number(coeff[0].iic);
-    const weighted = surface * (iic/5);
+    const units = num(base[0].units_count, `units_count mancante/non numerico in market_base_data (Scuole) per sector_id=${sectorId}, geo_area_id=${geoId}`);
+    const srcName = assertValue(base[0].source_name, `source_name mancante in market_base_data (Scuole) per sector_id=${sectorId}, geo_area_id=${geoId}`);
+    const srcYear = assertValue(base[0].source_year, `source_year mancante in market_base_data (Scuole) per sector_id=${sectorId}, geo_area_id=${geoId}`);
+
+    // Coefficients
+    const coeff = await sb(`afidamp_coefficients?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&select=surface_per_unit,iic&limit=1`);
+    assertNonEmpty(coeff, `Coefficienti mancanti in afidamp_coefficients per model_version_id=${mvId}, sector_id=${sectorId} (Scuole).`);
+
+    const surfacePerUnit = num(coeff[0].surface_per_unit, "surface_per_unit mancante/non numerico in afidamp_coefficients (Scuole)");
+    const iic = num(coeff[0].iic, "iic mancante/non numerico in afidamp_coefficients (Scuole)");
+
+    const surface = units * surfacePerUnit;
+    const weighted = surface * (iic / 5);
     const cls = opportunityClass(weighted, lowMax, mediumMax);
 
     return {
@@ -98,44 +145,70 @@ async function estimate(sectorCode, regionIstat) {
       iic,
       weighted,
       opportunity: cls,
-      source: `${base[0].source_name} (${base[0].source_year})`,
+      source: `${srcName} (${srcYear})`,
       model: `AFIDAMP v${mv[0].version_code}`
     };
   }
 
-  const subtypes = await sb(`sector_subtype?sector_id=eq.${sectorId}&select=id,code,label_it`);
+  // --- HEALTH ---
+  // Subtypes
+  const subtypes = await sb(`sector_subtype?sector_id=eq.${sectorId}&select=id,code,label_it&order=id.asc`);
+  assertNonEmpty(subtypes, `Nessun sector_subtype trovato per sector_id=${sectorId} (Sanità).`);
+
+  // Coefficients by subtype
   const mvCoeff = await sb(`afidamp_coefficients?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&select=sector_subtype_id,surface_per_proxy_unit,iic`);
+  assertNonEmpty(mvCoeff, `Coefficienti mancanti in afidamp_coefficients per model_version_id=${mvId}, sector_id=${sectorId} (Sanità).`);
 
   let rows = [];
   let totalSurface = 0;
   let totalWeighted = 0;
+  let usedAny = false;
 
   for (const st of subtypes) {
+    // Base data per subtype
     const base = await sb(`market_base_data?sector_id=eq.${sectorId}&sector_subtype_id=eq.${st.id}&geo_area_id=eq.${geoId}&select=proxy_value,source_name,source_year&order=source_year.desc&limit=1`);
-    if (!base.length) continue;
+    if (!base || !base.length) {
+      // Nessun dato per questo subtype: lo saltiamo
+      continue;
+    }
 
     const c = mvCoeff.find(x => x.sector_subtype_id === st.id);
-    const beds = Number(base[0].proxy_value);
-    const surface = beds * Number(c.surface_per_proxy_unit);
-    const iic = Number(c.iic);
-    const weighted = surface * (iic/5);
+    if (!c) {
+      // Nessun coefficiente per questo subtype: lo saltiamo
+      continue;
+    }
+
+    const proxy = num(base[0].proxy_value, `proxy_value mancante/non numerico in market_base_data (Sanità) per sector_id=${sectorId}, sector_subtype_id=${st.id}, geo_area_id=${geoId}`);
+    const surfacePerProxy = num(c.surface_per_proxy_unit, `surface_per_proxy_unit mancante/non numerico in afidamp_coefficients (Sanità) per sector_subtype_id=${st.id}`);
+    const iic = num(c.iic, `iic mancante/non numerico in afidamp_coefficients (Sanità) per sector_subtype_id=${st.id}`);
+
+    const surface = proxy * surfacePerProxy;
+    const weighted = surface * (iic / 5);
 
     totalSurface += surface;
     totalWeighted += weighted;
+    usedAny = true;
 
     rows.push({
       subtype: st.label_it,
-      beds,
+      proxy,
       surface
     });
   }
 
+  if (!usedAny) {
+    throw new Error(
+      `Dati base mancanti in market_base_data (Sanità) per sector_id=${sectorId} e geo_area_id=${geoId}. ` +
+      `Attesi record con sector_subtype_id e proxy_value.`
+    );
+  }
+
   const cls = opportunityClass(totalWeighted, lowMax, mediumMax);
+
   return {
     title: `Sanità – ${geo[0].name_it}`,
     detailRows: rows,
     surface: totalSurface,
-    iic: 5,
     weighted: totalWeighted,
     opportunity: cls,
     model: `AFIDAMP v${mv[0].version_code}`
@@ -173,7 +246,9 @@ document.getElementById("run").addEventListener("click", async () => {
         </div>
       `;
     } else if (r.detailRows) {
-      const rows = r.detailRows.map(x => `<li>${x.subtype}: ${fmt(x.beds)} posti letto → ${fmt(x.surface)} m²</li>`).join("");
+      const rows = r.detailRows
+        .map(x => `<li>${x.subtype}: ${fmt(x.proxy)} unità proxy → ${fmt(x.surface)} m²</li>`)
+        .join("");
       html += `
         <div class="card" style="min-width:320px">
           <div><strong>Dettaglio</strong></div>
@@ -184,7 +259,7 @@ document.getElementById("run").addEventListener("click", async () => {
 
     out.innerHTML = html;
   } catch (e) {
-    out.innerHTML = `<div class="card"><strong>Errore:</strong><br><pre>${String(e)}</pre></div>`;
+    out.innerHTML = `<div class="card"><strong>Errore:</strong><br><pre>${String(e.message || e)}</pre></div>`;
   }
 });
 
