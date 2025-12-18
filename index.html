@@ -236,6 +236,23 @@ document.getElementById("run").addEventListener("click", async () => {
         <div style="margin-top:8px; color:#555">${r.model || ""}</div>
       </div>
     `;
+html += `
+  <div class="card" style="background:#f7f7f7; flex:1">
+    <strong>Come interpretare questi risultati</strong>
+    <p style="margin-top:8px">
+      Il livello di <strong>Opportunità ${r.opportunity}</strong> indica il potenziale complessivo
+      del territorio per il settore selezionato, considerando sia la dimensione delle superfici
+      sia l’intensità di utilizzo (indice IIC).
+    </p>
+    <ul>
+      <li><strong>Superficie stimata</strong>: dimensione fisica complessiva degli ambienti analizzati.</li>
+      <li><strong>Superficie pesata (IIC)</strong>: quota di superficie con maggiore intensità operativa
+      e requisiti igienico-sanitari più elevati.</li>
+      <li><strong>Opportunità Alta</strong>: territorio prioritario per investimenti, presidio commerciale
+      e sviluppo di soluzioni dedicate.</li>
+    </ul>
+  </div>
+`;
 
     if (r.unitsLabel) {
       html += `
