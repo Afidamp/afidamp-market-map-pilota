@@ -16,6 +16,9 @@
     .badge-mon  { background: #e9f2ff; border: 1px solid #b9d7ff; }
     .small { color:#555; font-size: 12px; margin-top: 6px; }
 
+    details summary { cursor: pointer; }
+    details p { margin: 8px 0; }
+
     label { display:block; margin-bottom: 6px; }
     select, button { padding: 8px; }
   </style>
@@ -150,6 +153,19 @@ function opportunityMessages(level) {
   };
 }
 
+function escHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function nl2br(s) {
+  return escHtml(s).replaceAll("\n", "<br>");
+}
+
 async function loadRegions() {
   const regions = await sb("geo_area?level=eq.REGION&select=istat_code,name_it&order=name_it.asc");
   const sel = document.getElementById("region");
@@ -178,6 +194,9 @@ async function estimate(sectorCode, regionIstat) {
   const lowMax = num(thr[0].low_max, "low_max mancante/non numerico in opportunity_thresholds");
   const mediumMax = num(thr[0].medium_max, "medium_max mancante/non numerico in opportunity_thresholds");
 
+  // Nota metodologica: disponibile nella model_version
+  const methodology = mv[0].methodology_note || "";
+
   if (sectorCode === "SCHOOL") {
     const base = await sb(`market_base_data?sector_id=eq.${sectorId}&geo_area_id=eq.${geoId}&select=units_count,source_name,source_year&order=source_year.desc&limit=1`);
     assertNonEmpty(base, `Dati mancanti in market_base_data per sector_id=${sectorId} e geo_area_id=${geoId} (Scuole).`);
@@ -205,7 +224,9 @@ async function estimate(sectorCode, regionIstat) {
       weighted,
       opportunity: cls,
       source: `${srcName} (${srcYear})`,
-      model: `AFIDAMP v${mv[0].version_code}`
+      model: `AFIDAMP v${mv[0].version_code}`,
+      modelVersionId: mvId,
+      methodology
     };
   }
 
@@ -256,7 +277,9 @@ async function estimate(sectorCode, regionIstat) {
     surface: totalSurface,
     weighted: totalWeighted,
     opportunity: cls,
-    model: `AFIDAMP v${mv[0].version_code}`
+    model: `AFIDAMP v${mv[0].version_code}`,
+    modelVersionId: mvId,
+    methodology
   };
 }
 
@@ -325,6 +348,31 @@ document.getElementById("run").addEventListener("click", async () => {
         </div>
       `;
     }
+
+    /* Nota metodologica AFIDAMP (integrata, in collapse) */
+    html += `
+      <div class="card" style="min-width:320px; flex:1">
+        <details>
+          <summary><strong>Nota metodologica AFIDAMP</strong></summary>
+          <div style="margin-top:8px">
+            <p>
+              Le stime sono indicative e dipendono dalla completezza/qualità delle fonti disponibili.
+              La <strong>Superficie pesata (IIC)</strong> rappresenta una stima normalizzata dell’intensità operativa
+              (frequenze, criticità igienico-sanitarie, complessità), utile per confronti tra territori e per la definizione di priorità.
+            </p>
+            <p>
+              <strong>Versione modello:</strong> ${escHtml(r.model || "")}
+              &nbsp;|&nbsp; <strong>ID modello:</strong> ${escHtml(r.modelVersionId || "")}
+            </p>
+            ${
+              r.methodology
+                ? `<p><strong>Nota del modello:</strong><br>${nl2br(r.methodology)}</p>`
+                : `<p><em>Nessuna nota metodologica disponibile per questa versione del modello.</em></p>`
+            }
+          </div>
+        </details>
+      </div>
+    `;
 
     out.innerHTML = html;
   } catch (e) {
