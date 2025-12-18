@@ -9,6 +9,11 @@
     .row { display: flex; gap: 12px; flex-wrap: wrap; }
     .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; min-width: 260px; }
     .kpi { font-size: 22px; font-weight: bold; }
+    .badge { display:inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: bold; margin-top: 8px; }
+.badge-prio { background: #ffe8e8; border: 1px solid #ffb3b3; }
+.badge-sel  { background: #fff4db; border: 1px solid #ffd27a; }
+.badge-mon  { background: #e9f2ff; border: 1px solid #b9d7ff; }
+.small { color:#555; font-size: 12px; margin-top: 6px; }
     label { display:block; margin-bottom: 6px; }
     select, button { padding: 8px; }
   </style>
@@ -82,6 +87,11 @@ function opportunityClass(value, lowMax, mediumMax) {
   if (value <= lowMax) return "Bassa";
   if (value <= mediumMax) return "Media";
   return "Alta";
+}
+function opportunityBadge(opportunity) {
+  if (opportunity === "Alta") return { label: "Prioritario", cls: "badge badge-prio" };
+  if (opportunity === "Media") return { label: "Selettivo", cls: "badge badge-sel" };
+  return { label: "Monitorare", cls: "badge badge-mon" };
 }
 
 async function loadRegions() {
@@ -279,10 +289,20 @@ document.getElementById("run").addEventListener("click", async () => {
     const region = document.getElementById("region").value;
     const r = await estimate(sector, region);
 
-    let html = `
-      <div class="card" style="flex:1">
-        <div><strong>${r.title}</strong></div>
-        <div style="margin-top:8px" class="kpi">Opportunità: ${r.opportunity}</div>
+   const badge = opportunityBadge(r.opportunity);
+
+let html = `
+  <div class="card" style="flex:1">
+    <div><strong>${r.title}</strong></div>
+    <div style="margin-top:8px" class="kpi">Opportunità: ${r.opportunity}</div>
+    <div class="${badge.cls}">${badge.label}</div>
+    <div class="small">Lettura operativa: ${badge.label === "Prioritario" ? "azione consigliata immediata" : badge.label === "Selettivo" ? "azione mirata e selettiva" : "monitoraggio e presidio leggero"}</div>
+    <div style="margin-top:8px">Superficie stimata: <strong>${fmt(r.surface)} m²</strong></div>
+    <div>Superficie pesata (IIC): <strong>${fmt(r.weighted)} m²</strong></div>
+    <div style="margin-top:8px; color:#555">${r.model || ""}</div>
+  </div>
+`;
+
         <div>Superficie stimata: <strong>${fmt(r.surface)} m²</strong></div>
         <div>Superficie pesata (IIC): <strong>${fmt(r.weighted)} m²</strong></div>
         <div style="margin-top:8px; color:#555">${r.model || ""}</div>
