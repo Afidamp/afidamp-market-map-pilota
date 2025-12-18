@@ -9,11 +9,13 @@
     .row { display: flex; gap: 12px; flex-wrap: wrap; }
     .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; min-width: 260px; }
     .kpi { font-size: 22px; font-weight: bold; }
+
     .badge { display:inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: bold; margin-top: 8px; }
-.badge-prio { background: #ffe8e8; border: 1px solid #ffb3b3; }
-.badge-sel  { background: #fff4db; border: 1px solid #ffd27a; }
-.badge-mon  { background: #e9f2ff; border: 1px solid #b9d7ff; }
-.small { color:#555; font-size: 12px; margin-top: 6px; }
+    .badge-prio { background: #ffe8e8; border: 1px solid #ffb3b3; }
+    .badge-sel  { background: #fff4db; border: 1px solid #ffd27a; }
+    .badge-mon  { background: #e9f2ff; border: 1px solid #b9d7ff; }
+    .small { color:#555; font-size: 12px; margin-top: 6px; }
+
     label { display:block; margin-bottom: 6px; }
     select, button { padding: 8px; }
   </style>
@@ -88,146 +90,13 @@ function opportunityClass(value, lowMax, mediumMax) {
   if (value <= mediumMax) return "Media";
   return "Alta";
 }
+
 function opportunityBadge(opportunity) {
   if (opportunity === "Alta") return { label: "Prioritario", cls: "badge badge-prio" };
   if (opportunity === "Media") return { label: "Selettivo", cls: "badge badge-sel" };
   return { label: "Monitorare", cls: "badge badge-mon" };
 }
 
-async function loadRegions() {
-  const regions = await sb("geo_area?level=eq.REGION&select=istat_code,name_it&order=name_it.asc");
-  const sel = document.getElementById("region");
-  sel.innerHTML = regions.map(r => `<option value="${r.istat_code}">${r.name_it}</option>`).join("");
-}
-
-async function estimate(sectorCode, regionIstat) {
-  // 1) Model version (published)
-  const mv = await sb("model_version?status=eq.published&select=id,version_code,methodology_note&order=id.desc&limit=1");
-  assertNonEmpty(mv, "Nessuna model_version pubblicata trovata (model_version status=published).");
-  const mvId = mv[0].id;
-
-  // 2) Sector
-  const sector = await sb(`sector?code=eq.${sectorCode}&select=id,code,label_it,proxy_type,default_iic`);
-  assertNonEmpty(sector, `Settore non trovato in tabella sector (code=${sectorCode}).`);
-  const sectorId = sector[0].id;
-
-  // 3) Geo area (region)
-  const geo = await sb(`geo_area?level=eq.REGION&istat_code=eq.${regionIstat}&select=id,name_it`);
-  assertNonEmpty(geo, `Regione non trovata in tabella geo_area (level=REGION, istat_code=${regionIstat}).`);
-  const geoId = geo[0].id;
-
-  // 4) Thresholds (opportunity)
-  const thr = await sb(`opportunity_thresholds?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&geo_level=eq.REGION&metric=eq.surface_iic_weighted&select=low_max,medium_max`);
-  assertNonEmpty(
-    thr,
-    `Soglie mancanti in opportunity_thresholds per model_version_id=${mvId}, sector_id=${sectorId}, geo_level=REGION, metric=surface_iic_weighted.`
-  );
-
-  const lowMax = num(thr[0].low_max, "low_max mancante/non numerico in opportunity_thresholds");
-  const mediumMax = num(thr[0].medium_max, "medium_max mancante/non numerico in opportunity_thresholds");
-
-  // --- SCHOOL ---
-  if (sectorCode === "SCHOOL") {
-    // Base data
-    const base = await sb(`market_base_data?sector_id=eq.${sectorId}&geo_area_id=eq.${geoId}&select=units_count,source_name,source_year&order=source_year.desc&limit=1`);
-    assertNonEmpty(base, `Dati mancanti in market_base_data per sector_id=${sectorId} e geo_area_id=${geoId} (Scuole).`);
-
-    const units = num(base[0].units_count, `units_count mancante/non numerico in market_base_data (Scuole) per sector_id=${sectorId}, geo_area_id=${geoId}`);
-    const srcName = assertValue(base[0].source_name, `source_name mancante in market_base_data (Scuole) per sector_id=${sectorId}, geo_area_id=${geoId}`);
-    const srcYear = assertValue(base[0].source_year, `source_year mancante in market_base_data (Scuole) per sector_id=${sectorId}, geo_area_id=${geoId}`);
-
-    // Coefficients
-    const coeff = await sb(`afidamp_coefficients?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&select=surface_per_unit,iic&limit=1`);
-    assertNonEmpty(coeff, `Coefficienti mancanti in afidamp_coefficients per model_version_id=${mvId}, sector_id=${sectorId} (Scuole).`);
-
-    const surfacePerUnit = num(coeff[0].surface_per_unit, "surface_per_unit mancante/non numerico in afidamp_coefficients (Scuole)");
-    const iic = num(coeff[0].iic, "iic mancante/non numerico in afidamp_coefficients (Scuole)");
-
-    const surface = units * surfacePerUnit;
-    const weighted = surface * (iic / 5);
-    const cls = opportunityClass(weighted, lowMax, mediumMax);
-
-    return {
-      title: `Scuole – ${geo[0].name_it}`,
-      unitsLabel: "Edifici scolastici",
-      units,
-      surface,
-      iic,
-      weighted,
-      opportunity: cls,
-      source: `${srcName} (${srcYear})`,
-      model: `AFIDAMP v${mv[0].version_code}`
-    };
-  }
-
-  // --- HEALTH ---
-  // Subtypes
-  const subtypes = await sb(`sector_subtype?sector_id=eq.${sectorId}&select=id,code,label_it&order=id.asc`);
-  assertNonEmpty(subtypes, `Nessun sector_subtype trovato per sector_id=${sectorId} (Sanità).`);
-
-  // Coefficients by subtype
-  const mvCoeff = await sb(`afidamp_coefficients?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&select=sector_subtype_id,surface_per_proxy_unit,iic`);
-  assertNonEmpty(mvCoeff, `Coefficienti mancanti in afidamp_coefficients per model_version_id=${mvId}, sector_id=${sectorId} (Sanità).`);
-
-  let rows = [];
-  let totalSurface = 0;
-  let totalWeighted = 0;
-  let usedAny = false;
-
-  for (const st of subtypes) {
-    // Base data per subtype
-    const base = await sb(`market_base_data?sector_id=eq.${sectorId}&sector_subtype_id=eq.${st.id}&geo_area_id=eq.${geoId}&select=proxy_value,source_name,source_year&order=source_year.desc&limit=1`);
-    if (!base || !base.length) {
-      // Nessun dato per questo subtype: lo saltiamo
-      continue;
-    }
-
-    const c = mvCoeff.find(x => x.sector_subtype_id === st.id);
-    if (!c) {
-      // Nessun coefficiente per questo subtype: lo saltiamo
-      continue;
-    }
-
-    const proxy = num(base[0].proxy_value, `proxy_value mancante/non numerico in market_base_data (Sanità) per sector_id=${sectorId}, sector_subtype_id=${st.id}, geo_area_id=${geoId}`);
-    const surfacePerProxy = num(c.surface_per_proxy_unit, `surface_per_proxy_unit mancante/non numerico in afidamp_coefficients (Sanità) per sector_subtype_id=${st.id}`);
-    const iic = num(c.iic, `iic mancante/non numerico in afidamp_coefficients (Sanità) per sector_subtype_id=${st.id}`);
-
-    const surface = proxy * surfacePerProxy;
-    const weighted = surface * (iic / 5);
-
-    totalSurface += surface;
-    totalWeighted += weighted;
-    usedAny = true;
-
-    rows.push({
-      subtype: st.label_it,
-      proxy,
-      surface
-    });
-  }
-
-  if (!usedAny) {
-    throw new Error(
-      `Dati base mancanti in market_base_data (Sanità) per sector_id=${sectorId} e geo_area_id=${geoId}. ` +
-      `Attesi record con sector_subtype_id e proxy_value.`
-    );
-  }
-
-  const cls = opportunityClass(totalWeighted, lowMax, mediumMax);
-
-  return {
-    title: `Sanità – ${geo[0].name_it}`,
-    detailRows: rows,
-    surface: totalSurface,
-    weighted: totalWeighted,
-    opportunity: cls,
-    model: `AFIDAMP v${mv[0].version_code}`
-  };
-}
-
-function fmt(n) {
-  return new Intl.NumberFormat('it-IT').format(Math.round(n));
-}
 function opportunityMessages(level) {
   if (level === "Alta") {
     return {
@@ -281,6 +150,120 @@ function opportunityMessages(level) {
   };
 }
 
+async function loadRegions() {
+  const regions = await sb("geo_area?level=eq.REGION&select=istat_code,name_it&order=name_it.asc");
+  const sel = document.getElementById("region");
+  sel.innerHTML = regions.map(r => `<option value="${r.istat_code}">${r.name_it}</option>`).join("");
+}
+
+async function estimate(sectorCode, regionIstat) {
+  const mv = await sb("model_version?status=eq.published&select=id,version_code,methodology_note&order=id.desc&limit=1");
+  assertNonEmpty(mv, "Nessuna model_version pubblicata trovata (model_version status=published).");
+  const mvId = mv[0].id;
+
+  const sector = await sb(`sector?code=eq.${sectorCode}&select=id,code,label_it,proxy_type,default_iic`);
+  assertNonEmpty(sector, `Settore non trovato in tabella sector (code=${sectorCode}).`);
+  const sectorId = sector[0].id;
+
+  const geo = await sb(`geo_area?level=eq.REGION&istat_code=eq.${regionIstat}&select=id,name_it`);
+  assertNonEmpty(geo, `Regione non trovata in tabella geo_area (level=REGION, istat_code=${regionIstat}).`);
+  const geoId = geo[0].id;
+
+  const thr = await sb(`opportunity_thresholds?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&geo_level=eq.REGION&metric=eq.surface_iic_weighted&select=low_max,medium_max`);
+  assertNonEmpty(
+    thr,
+    `Soglie mancanti in opportunity_thresholds per model_version_id=${mvId}, sector_id=${sectorId}, geo_level=REGION, metric=surface_iic_weighted.`
+  );
+
+  const lowMax = num(thr[0].low_max, "low_max mancante/non numerico in opportunity_thresholds");
+  const mediumMax = num(thr[0].medium_max, "medium_max mancante/non numerico in opportunity_thresholds");
+
+  if (sectorCode === "SCHOOL") {
+    const base = await sb(`market_base_data?sector_id=eq.${sectorId}&geo_area_id=eq.${geoId}&select=units_count,source_name,source_year&order=source_year.desc&limit=1`);
+    assertNonEmpty(base, `Dati mancanti in market_base_data per sector_id=${sectorId} e geo_area_id=${geoId} (Scuole).`);
+
+    const units = num(base[0].units_count, `units_count mancante/non numerico in market_base_data (Scuole) per sector_id=${sectorId}, geo_area_id=${geoId}`);
+    const srcName = assertValue(base[0].source_name, `source_name mancante in market_base_data (Scuole) per sector_id=${sectorId}, geo_area_id=${geoId}`);
+    const srcYear = assertValue(base[0].source_year, `source_year mancante in market_base_data (Scuole) per sector_id=${sectorId}, geo_area_id=${geoId}`);
+
+    const coeff = await sb(`afidamp_coefficients?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&select=surface_per_unit,iic&limit=1`);
+    assertNonEmpty(coeff, `Coefficienti mancanti in afidamp_coefficients per model_version_id=${mvId}, sector_id=${sectorId} (Scuole).`);
+
+    const surfacePerUnit = num(coeff[0].surface_per_unit, "surface_per_unit mancante/non numerico in afidamp_coefficients (Scuole)");
+    const iic = num(coeff[0].iic, "iic mancante/non numerico in afidamp_coefficients (Scuole)");
+
+    const surface = units * surfacePerUnit;
+    const weighted = surface * (iic / 5);
+    const cls = opportunityClass(weighted, lowMax, mediumMax);
+
+    return {
+      title: `Scuole – ${geo[0].name_it}`,
+      unitsLabel: "Edifici scolastici",
+      units,
+      surface,
+      iic,
+      weighted,
+      opportunity: cls,
+      source: `${srcName} (${srcYear})`,
+      model: `AFIDAMP v${mv[0].version_code}`
+    };
+  }
+
+  const subtypes = await sb(`sector_subtype?sector_id=eq.${sectorId}&select=id,code,label_it&order=id.asc`);
+  assertNonEmpty(subtypes, `Nessun sector_subtype trovato per sector_id=${sectorId} (Sanità).`);
+
+  const mvCoeff = await sb(`afidamp_coefficients?model_version_id=eq.${mvId}&sector_id=eq.${sectorId}&select=sector_subtype_id,surface_per_proxy_unit,iic`);
+  assertNonEmpty(mvCoeff, `Coefficienti mancanti in afidamp_coefficients per model_version_id=${mvId}, sector_id=${sectorId} (Sanità).`);
+
+  let rows = [];
+  let totalSurface = 0;
+  let totalWeighted = 0;
+  let usedAny = false;
+
+  for (const st of subtypes) {
+    const base = await sb(`market_base_data?sector_id=eq.${sectorId}&sector_subtype_id=eq.${st.id}&geo_area_id=eq.${geoId}&select=proxy_value,source_name,source_year&order=source_year.desc&limit=1`);
+    if (!base || !base.length) continue;
+
+    const c = mvCoeff.find(x => x.sector_subtype_id === st.id);
+    if (!c) continue;
+
+    const proxy = num(base[0].proxy_value, `proxy_value mancante/non numerico in market_base_data (Sanità) per sector_id=${sectorId}, sector_subtype_id=${st.id}, geo_area_id=${geoId}`);
+    const surfacePerProxy = num(c.surface_per_proxy_unit, `surface_per_proxy_unit mancante/non numerico in afidamp_coefficients (Sanità) per sector_subtype_id=${st.id}`);
+    const iic = num(c.iic, `iic mancante/non numerico in afidamp_coefficients (Sanità) per sector_subtype_id=${st.id}`);
+
+    const surface = proxy * surfacePerProxy;
+    const weighted = surface * (iic / 5);
+
+    totalSurface += surface;
+    totalWeighted += weighted;
+    usedAny = true;
+
+    rows.push({ subtype: st.label_it, proxy, surface });
+  }
+
+  if (!usedAny) {
+    throw new Error(
+      `Dati base mancanti in market_base_data (Sanità) per sector_id=${sectorId} e geo_area_id=${geoId}. ` +
+      `Attesi record con sector_subtype_id e proxy_value.`
+    );
+  }
+
+  const cls = opportunityClass(totalWeighted, lowMax, mediumMax);
+
+  return {
+    title: `Sanità – ${geo[0].name_it}`,
+    detailRows: rows,
+    surface: totalSurface,
+    weighted: totalWeighted,
+    opportunity: cls,
+    model: `AFIDAMP v${mv[0].version_code}`
+  };
+}
+
+function fmt(n) {
+  return new Intl.NumberFormat('it-IT').format(Math.round(n));
+}
+
 document.getElementById("run").addEventListener("click", async () => {
   const out = document.getElementById("out");
   out.innerHTML = "";
@@ -289,55 +272,39 @@ document.getElementById("run").addEventListener("click", async () => {
     const region = document.getElementById("region").value;
     const r = await estimate(sector, region);
 
-   const badge = opportunityBadge(r.opportunity);
+    const badge = opportunityBadge(r.opportunity);
+    const msg = opportunityMessages(r.opportunity);
 
-let html = `
-  <div class="card" style="flex:1">
-    <div><strong>${r.title}</strong></div>
-    <div style="margin-top:8px" class="kpi">Opportunità: ${r.opportunity}</div>
-    <div class="${badge.cls}">${badge.label}</div>
-    <div class="small">Lettura operativa: ${badge.label === "Prioritario" ? "azione consigliata immediata" : badge.label === "Selettivo" ? "azione mirata e selettiva" : "monitoraggio e presidio leggero"}</div>
-    <div style="margin-top:8px">Superficie stimata: <strong>${fmt(r.surface)} m²</strong></div>
-    <div>Superficie pesata (IIC): <strong>${fmt(r.weighted)} m²</strong></div>
-    <div style="margin-top:8px; color:#555">${r.model || ""}</div>
-  </div>
-`;
-
-        <div>Superficie stimata: <strong>${fmt(r.surface)} m²</strong></div>
+    let html = `
+      <div class="card" style="flex:1">
+        <div><strong>${r.title}</strong></div>
+        <div style="margin-top:8px" class="kpi">Opportunità: ${r.opportunity}</div>
+        <div class="${badge.cls}">${badge.label}</div>
+        <div class="small">
+          Lettura operativa:
+          ${badge.label === "Prioritario"
+            ? "azione consigliata immediata"
+            : badge.label === "Selettivo"
+            ? "azione mirata e selettiva"
+            : "monitoraggio e presidio leggero"}
+        </div>
+        <div style="margin-top:8px">Superficie stimata: <strong>${fmt(r.surface)} m²</strong></div>
         <div>Superficie pesata (IIC): <strong>${fmt(r.weighted)} m²</strong></div>
         <div style="margin-top:8px; color:#555">${r.model || ""}</div>
       </div>
     `;
-html += `
-  <div class="card" style="background:#f7f7f7; flex:1">
-    <strong>Come interpretare questi risultati</strong>
-    <p style="margin-top:8px">
-      Il livello di <strong>Opportunità ${r.opportunity}</strong> indica il potenziale complessivo
-      del territorio per il settore selezionato, considerando sia la dimensione delle superfici
-      sia l’intensità di utilizzo (indice IIC).
-    </p>
-    <ul>
-      <li><strong>Superficie stimata</strong>: dimensione fisica complessiva degli ambienti analizzati.</li>
-      <li><strong>Superficie pesata (IIC)</strong>: quota di superficie con maggiore intensità operativa
-      e requisiti igienico-sanitari più elevati.</li>
-      <li><strong>Opportunità Alta</strong>: territorio prioritario per investimenti, presidio commerciale
-      e sviluppo di soluzioni dedicate.</li>
-    </ul>
-  </div>
-`;
-const msg = opportunityMessages(r.opportunity);
 
-html += `
-  <div class="card" style="background:#f7f7f7; flex:1">
-    <strong>${msg.title}</strong>
-    <p style="margin-top:8px">${msg.text}</p>
-    ${msg.actions}
-    <p style="margin-top:8px; color:#555">
-      Metrica di riferimento consigliata: <strong>Superficie pesata (IIC)</strong>,
-      per confronti tra territori e definizione delle priorità operative.
-    </p>
-  </div>
-`;
+    html += `
+      <div class="card" style="background:#f7f7f7; flex:1">
+        <strong>${msg.title}</strong>
+        <p style="margin-top:8px">${msg.text}</p>
+        ${msg.actions}
+        <p style="margin-top:8px; color:#555">
+          Metrica di riferimento consigliata: <strong>Superficie pesata (IIC)</strong>,
+          per confronti tra territori e definizione delle priorità operative.
+        </p>
+      </div>
+    `;
 
     if (r.unitsLabel) {
       html += `
