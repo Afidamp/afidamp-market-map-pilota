@@ -218,6 +218,58 @@ async function estimate(sectorCode, regionIstat) {
 function fmt(n) {
   return new Intl.NumberFormat('it-IT').format(Math.round(n));
 }
+function opportunityMessages(level) {
+  if (level === "Alta") {
+    return {
+      title: "Territorio prioritario",
+      text: `
+        Il livello di opportunità <strong>ALTA</strong> indica un contesto con elevata concentrazione
+        di superfici e requisiti operativi complessi.
+        È un territorio su cui concentrare investimenti, presenza commerciale e soluzioni dedicate.
+      `,
+      actions: `
+        <ul>
+          <li><strong>Imprese di servizi</strong>: strutturare presidi stabili, piani di controllo qualità avanzati e formazione continua.</li>
+          <li><strong>Distributori</strong>: rafforzare assortimento, stock e supporto tecnico locale.</li>
+          <li><strong>Fabbricanti</strong>: priorità a reti commerciali, key account e partnership territoriali.</li>
+        </ul>
+      `
+    };
+  }
+
+  if (level === "Media") {
+    return {
+      title: "Territorio selettivo",
+      text: `
+        Il livello di opportunità <strong>MEDIA</strong> indica un mercato con potenziale,
+        ma con forte eterogeneità tra strutture e tipologie.
+        Richiede un approccio mirato e selettivo.
+      `,
+      actions: `
+        <ul>
+          <li><strong>Imprese di servizi</strong>: differenziare frequenze e livelli di servizio in base alle strutture.</li>
+          <li><strong>Distributori</strong>: focalizzarsi sulle categorie a maggiore rotazione.</li>
+          <li><strong>Fabbricanti</strong>: testare soluzioni specifiche e casi pilota.</li>
+        </ul>
+      `
+    };
+  }
+
+  return {
+    title: "Territorio da monitorare",
+    text: `
+      Il livello di opportunità <strong>BASSA</strong> indica un mercato limitato o frammentato.
+      Le azioni dovrebbero essere leggere e orientate al monitoraggio.
+    `,
+    actions: `
+      <ul>
+        <li><strong>Imprese di servizi</strong>: ottimizzare i costi e mantenere la continuità del servizio.</li>
+        <li><strong>Distributori</strong>: presidio essenziale e logistica efficiente.</li>
+        <li><strong>Fabbricanti</strong>: monitorare evoluzioni normative o strutturali.</li>
+      </ul>
+    `
+  };
+}
 
 document.getElementById("run").addEventListener("click", async () => {
   const out = document.getElementById("out");
@@ -251,6 +303,19 @@ html += `
       <li><strong>Opportunità Alta</strong>: territorio prioritario per investimenti, presidio commerciale
       e sviluppo di soluzioni dedicate.</li>
     </ul>
+  </div>
+`;
+const msg = opportunityMessages(r.opportunity);
+
+html += `
+  <div class="card" style="background:#f7f7f7; flex:1">
+    <strong>${msg.title}</strong>
+    <p style="margin-top:8px">${msg.text}</p>
+    ${msg.actions}
+    <p style="margin-top:8px; color:#555">
+      Metrica di riferimento consigliata: <strong>Superficie pesata (IIC)</strong>,
+      per confronti tra territori e definizione delle priorità operative.
+    </p>
   </div>
 `;
 
